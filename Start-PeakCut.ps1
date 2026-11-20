@@ -19,7 +19,7 @@ function Wait-Http($Uri, $Headers, $Process, $Log) {
     throw "Could not reach $Uri. Check $Log."
 }
 
-function Start-PeakCutAsr($Port, $Module, $Log, $Arguments) {
+function Start-PeakCutService($Port, $Module, $Log, $Arguments) {
     try {
         if (Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { return }
         $modulePattern = ' -m ' + [regex]::Escape($Module) + '(\s+\d+)?\s*$'
@@ -30,7 +30,7 @@ function Start-PeakCutAsr($Port, $Module, $Log, $Arguments) {
             Start-Process -FilePath "$PSScriptRoot\.venv\Scripts\python.exe" -ArgumentList (@('-u','-m',$Module) + @($Arguments)) -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput "$PSScriptRoot\$Log.log" -RedirectStandardError "$PSScriptRoot\$Log-error.log"
         }
     } catch {
-        Write-Warning "The transcription service $Module could not start. PeakCut can transcribe on the CPU."
+        Write-Warning "The PeakCut service $Module could not start. Check $Log-error.log."
     }
 }
 
@@ -38,10 +38,13 @@ $asrPort = 9000
 if ((Test-Path -LiteralPath "$PSScriptRoot\tools\peakcut_asr_router.py") -and
     (Test-Path -LiteralPath "$PSScriptRoot\secrets\mac-asr-target.txt")) {
     $asrPort = 9002
-    Start-PeakCutAsr 9000 'tools.peakcut_asr_router' 'asr-router' @()
+    Start-PeakCutService 9000 'tools.peakcut_asr_router' 'asr-router' @()
 }
 if (Test-Path -LiteralPath "$PSScriptRoot\tools\asr-cuda\onnxruntime_providers_cuda.dll") {
-    Start-PeakCutAsr $asrPort 'tools.peakcut_asr_cuda' 'asr-cuda' @($asrPort)
+    Start-PeakCutService $asrPort 'tools.peakcut_asr_cuda' 'asr-cuda' @($asrPort)
+}
+if (Test-Path -LiteralPath "$PSScriptRoot\secrets\mac-device-ed25519") {
+    Start-PeakCutService 11435 'tools.peakcut_mac_bridge' 'mac-device' @()
 }
 
 try {
@@ -56,6 +59,14 @@ try {
 }
 Write-Host "PeakCut is running at $dashboard"
 
+$lanAddress = '192.168.1.16'
+$lanPort = 8766
+$lanPython = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
+if ((Test-Path -LiteralPath $lanPython) -and
+    (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias 'Wi-Fi' -IPAddress $lanAddress -ErrorAction SilentlyContinue) -and
+    -not (Get-NetTCPConnection -LocalAddress $lanAddress -LocalPort $lanPort -State Listen -ErrorAction SilentlyContinue)) {
+    Start-Process -FilePath $lanPython -ArgumentList 'tools\lan_dashboard.py', "$lanAddress/24" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
+}
 if ($DashboardOnly) { return }
 
 $token = (Get-Content (Join-Path $PSScriptRoot 'secrets\gateway-token.txt') -Raw).Trim()
