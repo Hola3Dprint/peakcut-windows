@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from . import admin as admins
 from . import account, load
-from . import (accounts, ai, alerts, auth, config, creators, ctx, db, jobs, live, media, posting,
+from . import (accounts, ai, alerts, auth, config, creators, ctx, db, devices, jobs, live, media, posting,
                profiles, render, safe, transcribe, usage)
 
 from . import tools as _tools  # noqa: E402
@@ -47,6 +47,7 @@ CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 
 
 
 BOOT = f"{int(time.time()) % 100000:x}"     # part of every sync token, so pages reload their data after a restart
+_server = None
 
 
 @app.on_event("startup")
@@ -69,9 +70,13 @@ def _startup():
     if not transcribe.REMOTE and config.env("PEAKCUT_FETCH_MODEL", "1") != "0":     # the speech model: fetched now, in the background, if it was never downloaded
         from . import fetch_model
         threading.Thread(target=lambda: _quiet(fetch_model.ensure), daemon=True).start()
-    jobs.start()
-    live.start()
-    posting.start()
+    if devices.active():
+        jobs.start()
+        live.start()
+        posting.start()
+    else:
+        jobs.load_all()
+    devices.start_monitor()
     from . import updates
     updates.start()                  # looks for a newer PeakCut every minute, in the background
 
@@ -151,6 +156,10 @@ class Gate:
             return await deny(401, "Please sign in.")
         if user and path in ("/login", "/signup"):
             return await deny(303, "", redirect="/app")
+        if (not devices.active() and method not in ("GET", "HEAD")
+                and path.startswith("/api/") and not path.startswith("/api/auth/")
+                and path not in ("/api/devices", "/api/devices/switch", "/api/devices/transfer")):
+            return await deny(409, "This PeakCut is on standby. Open the coordinator to make changes.")
         scope.setdefault("state", {})["user"] = user
         if user and path in ("/api/upload", "/api/upload/start") and method == "POST":
             # decided before a single byte of the file is accepted: verified, has a free slot, has disk space
@@ -412,7 +421,7 @@ def admin_page(request: Request, rest: str = ""):
 def healthz():
     with db.engine.connect() as c:
         c.execute(sa.text("select 1"))
-    return {"ok": True}
+    return {"ok": True, "device": devices.HOST, "coordinator": devices.coordinator(), "active": devices.active()}
 
 
 @app.get("/brand/{name}")
@@ -1313,6 +1322,68 @@ def ai_test(request: Request):
         raise HTTPException(502, ai.explain(e) or "The AI did not answer: " + _ai_error(e))
 
 
+@app.get("/api/devices")
+async def device_status(request: Request):
+    _admin(request)
+    result = await devices.snapshot()
+    result["handoff"] = result["handoff"] and _local_device_request(request)
+    return result
+
+
+@app.put("/api/devices")
+async def device_settings(request: Request, body: dict = Body(...)):
+    _admin(request)
+    try:
+        devices.save(body)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(400, str(error))
+    usage.forget_all()
+    ctx.bump()
+    return await device_status(request)
+
+
+def _local_device_request(request):
+    return request.client and request.client.host in ("127.0.0.1", "::1") and request.url.hostname in (
+        "127.0.0.1", "localhost", "::1")
+
+
+@app.post("/api/devices/switch")
+def device_switch(request: Request, body: dict = Body(...)):
+    _admin(request)
+    if not _local_device_request(request):
+        raise HTTPException(403, "Open the desktop’s local dashboard to switch devices.")
+    _throttle("device-switch:" + ctx.uid(), 4, 600)
+    try:
+        devices.start_handoff(body.get("target"))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(409, str(error))
+    return {"started": True}
+
+
+@app.post("/api/devices/transfer")
+def device_transfer(request: Request, body: dict = Body(...)):
+    token = devices.control_token()
+    if (not token or not request.client or request.client.host not in ("127.0.0.1", "::1")
+            or not hmac.compare_digest(request.headers.get("x-peakcut-control", ""), token)):
+        raise HTTPException(404)
+    phase = body.get("action")
+    if phase == "drain":
+        with posting._lock:
+            if devices.active():
+                devices.set_coordinator(None)
+        for session in live.active():
+            session.stop("Recording interrupted by a device handoff", resume=True)
+    elif phase not in ("status", "exit"):
+        raise HTTPException(400, "Unknown handoff step.")
+    busy = any(p["status"] == "posting" for p in posting._posts) or any(
+        session.proc and session.proc.poll() is None for session in list(live.SESSIONS.values()))
+    if phase == "exit":
+        if busy or devices.active() or not _server:
+            raise HTTPException(409, "PeakCut still has work to close.")
+        _server.should_exit = True
+    return {"busy": busy}
+
+
 # ================================================================ posting, accounts, settings
 @app.get("/api/overview")
 def overview():
@@ -1556,6 +1627,7 @@ def admin_delete_user(request: Request, uid: str, body: dict = Body(...)):
 
 
 def main():
+    global _server
     print(f"\n  PeakCut is running:  {config.PUBLIC_URL}\n")
     if not config.ACCOUNTS and (config.HTTPS or config.HOST not in ("127.0.0.1", "localhost", "::1")):
         print("  Sign-in is off, so anyone who can reach this address can use PeakCut and its AI key.\n"
@@ -1566,8 +1638,9 @@ def main():
                     reload_dirs=[str(config.ROOT / "studio")], reload_includes=["*.py"],
                     proxy_headers=bool(config.env("PEAKCUT_TRUST_PROXY")), forwarded_allow_ips="*")
         return
-    uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="warning", backlog=4096,
-                proxy_headers=bool(config.env("PEAKCUT_TRUST_PROXY")), forwarded_allow_ips="*")
+    _server = uvicorn.Server(uvicorn.Config(app, host=config.HOST, port=config.PORT, log_level="warning", backlog=4096,
+                            proxy_headers=bool(config.env("PEAKCUT_TRUST_PROXY")), forwarded_allow_ips="*"))
+    _server.run()
 
 
 if __name__ == "__main__":

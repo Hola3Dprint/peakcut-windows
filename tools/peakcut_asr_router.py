@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import subprocess
+import sys
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from time import monotonic
@@ -12,7 +13,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
-from studio import config
+from studio import config, devices
 from studio.asr_worker import MAX_BODY, MAX_PIECE, TOKEN
 
 
@@ -26,8 +27,8 @@ class Worker:
 
 
 workers = {
-    "windows": Worker("http://127.0.0.1:9002", TOKEN),
-    "mac": Worker("http://127.0.0.1:9001", ""),
+    "desktop": Worker(config.env("PEAKCUT_DESKTOP_WORKER_URL", "http://127.0.0.1:9002"), TOKEN),
+    "mac": Worker(config.env("PEAKCUT_MAC_WORKER_URL", "http://127.0.0.1:9001"), ""),
 }
 available = asyncio.Condition()
 log = logging.getLogger("uvicorn.error")
@@ -63,17 +64,26 @@ async def supervise_mac_tunnel(target):
 @asynccontextmanager
 async def lifespan(app):
     secrets = config.ROOT / "secrets"
-    workers["mac"].token = (secrets / "mac-asr-token.txt").read_text().strip()
-    target = (secrets / "mac-asr-target.txt").read_text().strip()
-    tunnel = asyncio.create_task(supervise_mac_tunnel(target))
+    tunnel = None
+    if sys.platform == "win32":
+        workers["mac"].token = (secrets / "mac-asr-token.txt").read_text().strip()
+        target = (secrets / "mac-asr-target.txt").read_text().strip()
+        tunnel = asyncio.create_task(supervise_mac_tunnel(target))
+    else:
+        workers["mac"].token = config.env("PEAKCUT_MAC_WORKER_TOKEN", TOKEN)
+        token_path = config.env("PEAKCUT_DESKTOP_WORKER_TOKEN_FILE")
+        if token_path:
+            from pathlib import Path
+            workers["desktop"].token = Path(token_path).read_text().strip()
     try:
         async with httpx.AsyncClient(trust_env=False) as client:
             app.state.client = client
             yield
     finally:
-        tunnel.cancel()
-        with suppress(asyncio.CancelledError):
-            await tunnel
+        if tunnel:
+            tunnel.cancel()
+            with suppress(asyncio.CancelledError):
+                await tunnel
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -85,11 +95,13 @@ async def acquire(deadline):
             now = monotonic()
             if now >= deadline:
                 raise HTTPException(503, "Transcription workers are busy")
-            for worker in workers.values():
+            mode = devices.routing()["speech"]
+            chosen = workers.values() if mode == "both" else (workers[mode],)
+            for worker in chosen:
                 if not worker.busy and worker.retry_at <= now:
                     worker.busy = True
                     return worker
-            if not any(worker.busy for worker in workers.values()):
+            if not any(worker.busy for worker in chosen):
                 raise HTTPException(503, "Transcription workers are unavailable")
             try:
                 await asyncio.wait_for(available.wait(), deadline - now)
@@ -164,4 +176,4 @@ async def decode(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=9000, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=int(config.env("PEAKCUT_ROUTER_PORT", "9000")), log_level="warning")

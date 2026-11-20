@@ -19,7 +19,7 @@ import threading
 
 import httpx
 
-from . import config
+from . import config, devices
 
 # name -> (label shown on the pages, address, how it is spoken to, where to get a key, an example model id)
 PROVIDERS = {
@@ -29,7 +29,7 @@ PROVIDERS = {
     "groq": ("Groq", "https://api.groq.com/openai/v1", "openai", "https://console.groq.com/keys", "llama-3.3-70b-versatile"),
     "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "openai", "https://openrouter.ai/keys", "google/gemini-2.5-flash"),
     "anthropic": ("Claude", "https://api.anthropic.com/v1", "anthropic", "https://console.anthropic.com", ""),
-    "ollama": ("Ollama (on this machine)", "http://127.0.0.1:11434/v1", "openai", "https://ollama.com", "llama3.1"),
+    "ollama": ("Ollama (local)", "http://127.0.0.1:11434/v1", "openai", "https://ollama.com", "qwen3.5:4b"),
     "custom": ("Custom (OpenAI-compatible)", "", "openai", "", ""),
 }
 ALIASES = {"google": "gemini", "grok": "xai", "claude": "anthropic", "local": "ollama"}
@@ -60,8 +60,10 @@ def _from_dashboard() -> dict:
     return _saved["data"]
 
 
-def current() -> dict:
+def current(*, use_device_override=True) -> dict:
     """Provider, models, address and key: what the dashboard saved, or else what .env says."""
+    if use_device_override and (local := devices.local_model()):
+        return local
     d = _from_dashboard()
     p = str(d.get("provider") or config.AI_PROVIDER or "").strip().lower()
     return {"provider": ALIASES.get(p, p),
@@ -125,7 +127,7 @@ def save(provider_id: str, model_ids, address: str = "", new_key=None) -> dict:
         raise ValueError("The address has to start with http:// or https://")
     if p == "custom" and not address:
         raise ValueError("A custom service needs its address, for example http://127.0.0.1:1234/v1")
-    old = current()
+    old = current(use_device_override=False)
     k = old["key"] if new_key is None and old["provider"] == p else str(new_key or "").strip()[:400]
     if not k and p not in NO_KEY:
         raise ValueError("Paste the key for this service.")
@@ -297,7 +299,12 @@ def call(model: str, prompt: str, schema: dict, timeout: float | None = None):
 
     `timeout` is how long one answer may take. A live stream passes a short one, because a slow
     answer must not stop the recording."""
-    how = PROVIDERS[provider()][2]
+    selected = current()
+    if selected.get("mac_local"):
+        grammar = {"type": "object", "properties": {"items": _json_schema(schema)}, "required": ["items"]}
+        answer, sent, received = _ollama(selected, model, _wrapped(prompt, schema), timeout, grammar)
+        return _parse(answer), sent, received
+    how = PROVIDERS[selected["provider"]][2]
     return {"gemini": _gemini, "openai": _openai, "anthropic": _anthropic}[how](model, prompt, schema, timeout)
 
 
@@ -309,7 +316,10 @@ def see(prompt: str, image: bytes, timeout: float | None = None, *, clip_review=
     it. The picture is a JPEG, passed as base64 inside the ordinary message."""
     if not ready() or not image or not models():
         return "", 0, 0
-    model = models()[0]
+    selected = current()
+    model = selected["models"][0]
+    if selected.get("mac_local"):
+        return _ollama(selected, model, prompt, timeout, "json", image)
     address = base_url()
     if clip_review and (provider() != "custom" or address != "http://127.0.0.1:18794/v1"
                         or model != "openclaw:peakcut"):
@@ -352,6 +362,27 @@ def see(prompt: str, image: bytes, timeout: float | None = None, *, clip_review=
     text = (data["choices"][0]["message"].get("content") or "")
     u = data.get("usage") or {}
     return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+
+
+def _ollama(selected, model, prompt, timeout, grammar, image=None):
+    """A local Ollama model uses the native JSON schema and image interface."""
+    address = (selected["base_url"] or PROVIDERS["ollama"][1]).removesuffix("/v1")
+    if not re.fullmatch(r"http://127\.0\.0\.1:\d{1,5}", address) or re.search(r"(^|[-:])cloud$", model, re.I):
+        raise AIError("Ollama clip work requires a local model through a loopback address.")
+    content = {"role": "user", "content": prompt}
+    if image:
+        content["images"] = [base64.b64encode(image).decode()]
+    body = {"model": model, "messages": [content], "format": grammar, "think": False, "stream": False,
+            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 1800}}
+    with httpx.Client(trust_env=False, timeout=timeout or 120) as client:
+        response = client.post(address + "/api/chat", json=body)
+    if response.status_code != 200:
+        _fail(response, model)
+    doc = response.json()
+    text = (doc.get("message") or {}).get("content") or ""
+    if not text or doc.get("done_reason") == "length":
+        raise AIError("The local model did not complete its answer.")
+    return text, int(doc.get("prompt_eval_count") or 0), int(doc.get("eval_count") or 0)
 
 
 def _gemini(model, prompt, schema, timeout=None):

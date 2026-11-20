@@ -9,6 +9,13 @@ secrets/
 *client_secret*.json
 data/
 storage.json
+coordinator.json
+device-settings.json
+handoff-status.json
+desktop-heartbeat.json
+handoff.lock
+data.backup-*/
+data.incoming-*/
 *.db
 *.db-wal
 *.db-shm

@@ -357,6 +357,8 @@ def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layo
     if config.NVENC and time.monotonic() >= _nvenc_retry_at:
         encoders.append(("nvenc", ["yuv420p", "-c:v", "h264_nvenc", "-preset", "p5",
                                    "-rc", "vbr", "-cq", "28", "-b:v", "0"]))
+    if config.env("PEAKCUT_VIDEOTOOLBOX") == "1":
+        encoders.append(("videotoolbox", ["yuv420p", "-c:v", "h264_videotoolbox", "-b:v", "5M", "-allow_sw", "0"]))
     if _qsv_ok is not False:
         encoders.append(("qsv", ["nv12", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "fast"]))
     encoders.append(("x264", ["yuv420p", "-c:v", "libx264", "-crf", "21", "-preset", "veryfast"]))

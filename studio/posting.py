@@ -8,7 +8,7 @@ import time
 import json
 from pathlib import Path
 
-from . import accounts, alerts, channel_queue, config, creators, ctx, editorial, framing, jobs, language, live, publish_review, usage, voices
+from . import accounts, alerts, channel_queue, config, creators, ctx, devices, editorial, framing, jobs, language, live, publish_review, usage, voices
 
 _lock = threading.RLock()
 _FILE = config.DATA_DIR / "posts.json"
@@ -306,7 +306,7 @@ def _post(p):
                 return
             now = time.time()
             kind = _type_for(p, now)
-            if accounts.settings()["paused"] or kind is None:
+            if not devices.active() or accounts.settings()["paused"] or kind is None:
                 p.update(status="scheduled", error=None)
                 _save()
                 _mirror(p)
@@ -351,7 +351,7 @@ def _post(p):
                     return
                 now = time.time()
                 kind = _type_for(p, now)
-                if accounts.settings()["paused"] or kind in (None, "standout_review"):
+                if not devices.active() or accounts.settings()["paused"] or kind in (None, "standout_review"):
                     p.update(status="scheduled", error=None)
                     _save()
                     _mirror(p)
@@ -454,7 +454,7 @@ def _run():
         for p in _due(now):
             try:
                 with ctx.as_user(p["user"]):
-                    if accounts.settings()["paused"]:
+                    if not devices.active() or accounts.settings()["paused"]:
                         continue
                     with _lock:
                         if p["status"] != "scheduled":

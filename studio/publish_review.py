@@ -162,9 +162,9 @@ def _screen(file, folder, raw, copy, audible=None):
         try:
             response, sent, received = ai.see(prompt, jpeg.getvalue(), timeout=180, clip_review=True)
         except (httpx.TransportError, ai.AIError) as error:
-            raise ReviewerUnavailable("Waiting for the ChatGPT reviewer. PeakCut will check again automatically.") from error
+            raise ReviewerUnavailable("Waiting for the clip reviewer. PeakCut will check again automatically.") from error
         if not response:
-            raise ReviewerUnavailable("Waiting for the ChatGPT reviewer. PeakCut will check again automatically.")
+            raise ReviewerUnavailable("Waiting for the clip reviewer. PeakCut will check again automatically.")
         usage.record(sent, received, "Clip scoring: publication suitability")
         result = json.loads(response.strip())
         if not isinstance(result, dict) or result.get("ticket") != ticket:

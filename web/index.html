@@ -1333,7 +1333,7 @@ function pathFor(v, tab) {
 function fromPath(path) {
   const m = path.match(/^\/app\/creators\/([^/]+)(?:\/(setup|activity|clips))?\/?$/);
   if (m) return ["c:" + decodeURIComponent(m[1]), m[2] || "clips"];
-  const st = path.match(/^\/app\/settings(?:\/(ai|profile|security|apps|storage|audio))?\/?$/);
+  const st = path.match(/^\/app\/settings(?:\/(ai|profile|security|apps|storage|audio|devices))?\/?$/);
   if (st) return ["settings", st[1] || null];
   const k = Object.keys(ROUTES).find(x => ROUTES[x] && path.replace(/\/$/, "") === "/app/" + ROUTES[x]);
   return [k || "overview", "clips"];
@@ -2066,6 +2066,7 @@ function drawUsage() {
 // With sign-in off there is no profile or password to manage. The AI section is for whoever runs the server.
 const setTabs = () => [
   ...(S.status.user?.is_admin ? [["ai", "AI", "bolt", "Your AI service, model and key"]] : []),
+  ...(S.status.user?.is_admin ? [["devices", "Devices", "plug", "Desktop, Mac and processing"]] : []),
   ...(S.status.accounts === false ? [] : [["profile", "Profile", "user", "Your name, email and how you sign in"],
                                           ["security", "Security", "lock", "Password and signing out"]]),
   ["audio", "Audio", "bell", "Clip previews and notification sounds"],
@@ -2080,6 +2081,34 @@ function aiHints() {
   $("#ai_base").placeholder = pv.address || "http://127.0.0.1:1234/v1";
   $("#ai_basewrap").hidden = pv.id !== "custom" && !(same && k.base_url);
 }
+async function drawDevices(body) {
+  const d = await api("/api/devices");
+  if (!body.isConnected || S.stab !== "devices") return;
+  const pick = (label, setting, value, enabled = true) =>
+    `<button type="button" class="btn sm ${d.routing[setting] === value ? "primary" : ""}" data-act="device-routing"
+      data-setting="${setting}" data-value="${value}" aria-pressed="${d.routing[setting] === value}" ${enabled ? "" : "disabled"}>${label}</button>`;
+  body.innerHTML = `<section class="set-sec"><div class="card-head"><div><h2>Devices</h2>
+    <p class="help">${d.coordinator ? `${d.coordinator === "mac" ? "Mac" : "Desktop"} runs recordings, editing and publishing.` : "A coordinator handoff is in progress."}</p></div>
+    <button type="button" class="btn sm" data-act="device-refresh">Refresh</button></div>
+    <div class="apps">${d.devices.map(node => `<div class="appcard"><span class="applogo" style="background:var(--brand-soft);color:var(--brand-deep)">${ic("plug")}</span>
+      <div class="apptx"><b>${esc(node.name)}</b><span>${node.coordinator ? "Coordinator" : node.dashboard ? "Dashboard standing by" : "Helper"}</span>
+      <span>${[node.speech ? `Speech · ${Number(node.pieces).toLocaleString()} pieces processed` : "", node.model ? `Local AI · ${esc(node.model)}` : ""].filter(Boolean).join(" · ")}</span></div>
+      <div class="appact"><span class="pill ${node.online ? "ok" : ""}">${node.online ? "Online" : node.monitored ? "Offline" : "Status unavailable"}</span></div></div>`).join("")}</div></section>
+    <section class="set-sec"><h2>Speech processing</h2><p class="help">Share transcription across the connected workers.</p>
+      <div class="row">${pick("Desktop", "speech", "desktop", d.speech_switch)}${pick("Mac", "speech", "mac", d.speech_switch)}${pick("Both devices", "speech", "both", d.speech_switch)}</div>
+    </section>
+    <section class="set-sec"><h2>AI for clips</h2><p class="help">The Mac model runs locally for text and images.</p>
+      <div class="row">${pick("Saved AI setup", "ai", "saved")}${pick("Local Mac AI", "ai", "mac", d.mac_ai && d.model_ready)}</div>
+    </section>
+    <section class="set-sec"><h2>Move the coordinator</h2>
+      <p class="help">A handoff copies your queue, accounts and saved clips. Older source recordings stay on their original device. Recordings reconnect on the other device. Keep both devices on until it finishes.</p>
+      ${d.transfer.message ? `<p class="sub" role="status">${esc(d.transfer.message)}</p>` : ""}
+      ${d.handoff && d.coordinator ? `<button type="button" class="btn" data-act="device-switch"
+        data-target="${d.coordinator === "mac" ? "desktop" : "mac"}">${d.coordinator === "mac" ? "Move to Desktop" : "Move to Mac"}</button>`
+        : '<p class="sub">To switch devices, open this panel on the paired desktop.</p>'}
+    </section>`;
+}
+
 async function drawSettings() {
   const box = $("#sform"); if (!box) return;
   const tab = S.stab || setTabs()[0][0], me = S.status.user;
@@ -2088,6 +2117,7 @@ async function drawSettings() {
     <div class="set-body" id="setbody"><div class="set-load">Loading…</div></div></div>`;
   const body = $("#setbody");
   try {
+    if (tab === "devices") await drawDevices(body);
     if (tab === "audio") {
       body.innerHTML = `<section class="set-sec"><h2>Audio</h2>
         <label class="sw"><input type="checkbox" id="muteAudio" ${audioMuted ? "checked" : ""}>Mute PeakCut audio</label>
@@ -2505,6 +2535,20 @@ document.addEventListener("click", async e => {
     }
     if (a === "tour") return startTour();
     if (a === "settab") { e.preventDefault(); S.stab = d.k; remember("settings", d.k); return drawSettings(); }
+    if (a === "device-refresh") return drawDevices($("#setbody"));
+    if (a === "device-routing") {
+      b.disabled = true;
+      await send("/api/devices", {[d.setting]:d.value}, "PUT");
+      S.status = await api("/api/status");
+      return drawDevices($("#setbody"));
+    }
+    if (a === "device-switch") {
+      const target = d.target === "mac" ? "Mac" : "Desktop";
+      if (!await ask(`Move PeakCut to ${target}?`, "Both dashboards will briefly disconnect while the workspace is transferred.", "Start handoff")) return;
+      b.disabled = true;
+      await send("/api/devices/switch", {target:d.target});
+      return toast("Device handoff started.", "ok");
+    }
     if (a === "updhow") return updateHow();
     if (a === "updlater") { try { localStorage.setItem("peakcut_update_seen", S.status.update?.latest || ""); } catch {} return drawShell(); }
     if (a === "storopen") { await send("/api/storage/open"); return; }

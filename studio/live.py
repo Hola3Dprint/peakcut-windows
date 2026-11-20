@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, editorial, facecam, games, jobs, load, media, transcribe, usage, voices, buffer_budget
+from . import alerts, auth, brain, config, creators, ctx, devices, editorial, facecam, games, jobs, load, media, transcribe, usage, voices, buffer_budget
 
 # ":username!user@host PRIVMSG #channel :the message"
 _NICK = re.compile(r"(?m)^:([A-Za-z0-9_]{2,25})!")
@@ -283,13 +283,15 @@ class Session:
         if m:
             threading.Thread(target=ctx.bind(self._chat), args=(m.group(1).lower(),), daemon=True).start()
 
-    def stop(self, note="Stopped by you"):
+    def stop(self, note="Stopped by you", *, resume=False):
         """Stop capture, then finish reviewing audio already received."""
         self.end_note = note
         self.user_stopped = True
         self.stop_flag.set()
         with self.lock:
             self.job["capture_stopped"] = True
+            if resume:
+                self.job["was_live"] = True
             self.job.update(status="running", stage="Finishing the recorded stream")
         jobs.save(self.job)
         proc = self.proc
@@ -1025,6 +1027,8 @@ def recover(job):
 
 
 def start_session(creator: dict, url=None) -> dict:
+    if not devices.active():
+        raise ValueError("This PeakCut is on standby.")
     if _buffer_paused:
         raise ValueError("The recording buffer is full. PeakCut is finishing existing recordings.")
     url = normalize(url or creator.get("channel") or "")
