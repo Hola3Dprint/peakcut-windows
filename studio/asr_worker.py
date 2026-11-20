@@ -21,6 +21,7 @@ from . import transcribe
 TOKEN = os.environ.get("PEAKCUT_ASR_TOKEN", "").strip()
 PORT = int(os.environ.get("PEAKCUT_ASR_PORT", "9000"))
 CARD_BATCH = int(os.environ.get("PEAKCUT_ASR_BATCH", "16"))
+CHUNK_SECONDS = int(os.environ.get("PEAKCUT_ASR_CHUNK_SECONDS", "0"))
 MAX_BODY = 64 * 1024 * 1024             # about 33 minutes of sound in one request: far more than is ever sent
 MAX_PIECE = 16000 * 40                  # a piece is 12 to 24 seconds; 40 is the ceiling
 
@@ -33,8 +34,32 @@ _slock = threading.Lock()
 def healthz():
     with _slock:
         s = dict(_stats)
-    return {"ok": True, "provider": transcribe.PROVIDER, "pieces": s["pieces"], "audio_hours": round(s["audio_s"] / 3600, 2),
+    return {"ok": True, "provider": transcribe.PROVIDER.partition(":")[0], "pieces": s["pieces"], "audio_hours": round(s["audio_s"] / 3600, 2),
             "speed": round(s["audio_s"] / s["busy_s"], 1) if s["busy_s"] else None}
+
+
+def _decode_batch(pieces):
+    if CHUNK_SECONDS <= 0:
+        return transcribe.decode_pieces(pieces)
+
+    # Fixed-size inputs let CUDA reuse its allocations across clips.
+    segment_samples = CHUNK_SECONDS * 16000
+    out = []
+    for piece in pieces:
+        cuts = ((0, len(piece)),) if len(piece) <= segment_samples else transcribe._chunks(
+            piece, lo=0.6 * CHUNK_SECONDS, hi=CHUNK_SECONDS)
+        tokens, timestamps = [], []
+        for start, end in cuts:
+            length = end - start
+            samples = np.pad(piece[start:end], (0, segment_samples - length))
+            (segment_tokens, segment_times), = transcribe.decode_pieces([samples])
+            valid = [(tok, time) for tok, time in zip(segment_tokens, segment_times) if time * 16000 < length]
+            if tokens and valid and not valid[0][0].startswith((" ", "▁")):
+                valid[0] = (" " + valid[0][0], valid[0][1])
+            tokens.extend(tok for tok, _ in valid)
+            timestamps.extend(start / 16000.0 + time for _, time in valid)
+        out.append((tokens, timestamps))
+    return out
 
 
 @app.post("/decode")
@@ -62,7 +87,7 @@ async def decode(request: Request):
         t0 = time.time()
         out = []
         for i in range(0, len(pieces), max(1, CARD_BATCH)):
-            out += transcribe.decode_pieces(pieces[i:i + max(1, CARD_BATCH)])
+            out += _decode_batch(pieces[i:i + max(1, CARD_BATCH)])
         with _slock:
             _stats["pieces"] += len(pieces)
             _stats["audio_s"] += sum(lens) / 16000

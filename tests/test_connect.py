@@ -152,16 +152,22 @@ jd.mkdir(parents=True)
 (jd / "clip01.mp4").write_bytes(b"\x00" * 6_000)
 from studio import jobs
 jobs.load_user(user.id)
+outgoing = jd.parent / "outgoing"
+outgoing.mkdir()
+reviewed_name = "reviewed-" + "a" * 32 + ".mp4"
+(outgoing / reviewed_name).write_bytes((jd / "clip01.mp4").read_bytes())
 with ctx.as_user(user.id):
-    link = accounts.clip_link("job-12345678", "clip01.mp4")
+    link = accounts.clip_link("job-12345678", reviewed_name)
+    unchecked = accounts.clip_link("job-12345678", "clip01.mp4")
 anon = TestClient(server.app, base_url=BASE)
 path = urlparse(link).path
-check("a signed link serves the clip to anyone, no sign-in", (anon.get(path).status_code, len(anon.get(path).content)), (200, 6000))
+check("a signed link serves the approved copy for platform retrieval", (anon.get(path).status_code, len(anon.get(path).content)), (200, 6000))
+check("a signed link cannot serve an unchecked editor output", anon.get(urlparse(unchecked).path).status_code, 404)
 bad = path.replace(".mp4", "x.mp4")
 check("a changed link does not", anon.get(bad).status_code, 404)
 check("a made-up link does not", anon.get("/pub/abc.def.mp4").status_code, 404)
 with ctx.as_user(user.id):
-    old = accounts.clip_link("job-12345678", "clip01.mp4", seconds=-5)
+    old = accounts.clip_link("job-12345678", reviewed_name, seconds=-5)
 check("an expired link does not", anon.get(urlparse(old).path).status_code, 404)
 
 # ---- posting

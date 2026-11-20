@@ -87,9 +87,9 @@ from unittest.mock import patch
 added = []
 s = _session("morning everyone")
 s.words = [{"w": "hello", "s": 0.5, "e": 0.9, "p": 0}]
-s.t_done, s.samples = 10.0, 10 * 16000
+s.t_done, s.samples = 20.0, 20 * 16000
 s._add_clip = added.append
-s.manual.append({"start": 0.0, "end": 2.0})
+s.manual.append({"start": 0.0, "end": 15.0})
 with patch.object(brain, "describe", side_effect=RuntimeError("The AI did not answer")):
     s._manual_step()
 check("a hand-picked clip is made when the AI fails", len(added), 1)

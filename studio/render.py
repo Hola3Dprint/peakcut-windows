@@ -3,9 +3,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
-from . import config, roman
+from . import config, editorial, framing, roman
 from .media import NO_WINDOW, run
 
 W, H = config.OUT_W, config.OUT_H
@@ -79,7 +80,9 @@ def install_fonts():
 
 
 LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)",
-           "gameplay": "Gameplay fills the screen, facecam in the corner"}
+           "gameplay": "Gameplay fills the screen, facecam in the corner",
+           "stream": "Stream framing: gameplay, reaction or full-scene context",
+           "subject": "Subject framing: one main shot"}
 
 
 def _ts(t):
@@ -261,6 +264,7 @@ def _hook_y(layout, hook_y, facecam=None):
 
 
 _qsv_ok = None
+_nvenc_retry_at = 0.0
 RENDER_SECONDS = 600      # one clip's video encode; far beyond normal, so a frozen encoder is stopped, not waited on
 
 
@@ -268,35 +272,91 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     """Writes <name>.mp4, <name>.jpg and <name>.ass into out_dir. Returns file names."""
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = clip["start"], clip["end"]
-    layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"))
+    requested = clip.get("layout", "blur")
+    layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, requested)
     face = clip.get("facecam")
     if layout == "gameplay" and not (face and len(face) == 4):
         layout = "crop"     # no webcam found: the game fills the screen, which is still the right shape
     hook_y = _hook_y(layout, hook_y, face)
-    ass = build_ass(words if clip.get("captions", True) else [], start, end, clip.get("hook", ""), clip.get("style", "bounce"),
-                    clip.get("highlight_words", []), hook_y, cap_y)
+    hook = clip.get("hook", "")
+    if requested in ("stream", "subject"):
+        layout, hook = requested, ""
+        # Some transcripts stretch one word across the following silence and into the next shot.
+        words = [dict(w, e=w["s"] + 1.5) if w["e"] - w["s"] > 3 else w for w in words]
     # The clip is made in a short work folder and moved into place afterwards. The caption step of ffmpeg cannot
     # open files whose full path is longer than 260 characters on Windows, which a data folder deep inside other
     # folders easily reaches. Inside the work folder every name is short and relative (a drive colon would also
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face)
+        caption_start, caption_end = start, end
+        if src.name.endswith(".src.ts"):
+            src = prepare_live_source(work, src, start, end, src_w, src_h)
+            start, end = 0, end - start
+        graph = None
+        if requested in ("stream", "subject"):
+            face, gameplay = None, None
+            if requested == "stream" and src_w > src_h:
+                try:
+                    if clip.get("facecam_manual"):
+                        if clip.get("facecam"):
+                            face = framing.camera_box(clip["facecam"], src_w, src_h)
+                    elif editorial.enabled():
+                        face, gameplay = editorial.stream_crops(src, start, end, src_w, src_h)
+                except Exception:
+                    face = None
+            offset = clip.get("src_offset", 0)
+            graph = framing.filtergraph(src_w, src_h, face, clip.get("framing_shots", []),
+                                        caption_start + offset, caption_end + offset, config.OUT_FPS,
+                                        single=requested == "subject", gameplay=gameplay)
+            cap_y = framing.FACE_HEIGHT + 30 if face else 1490
+        ass = build_ass(words if clip.get("captions", True) else [], caption_start, caption_end, hook, clip.get("style", "bounce"),
+                        clip.get("highlight_words", []), hook_y, cap_y)
+        out = _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face, graph=graph,
+                         level_audio=bool(clip.get("level_audio")))
+        if requested == "stream":
+            out.update(facecam=face, framing_verified=True)
+        return out
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, face=None) -> dict:
-    global _qsv_ok
+def prepare_live_source(work: Path, src: Path, start, end, width, height) -> Path:
+    """Prepare a live range on the same canvas used by its saved crop coordinates."""
+    dest = work / "live.mkv"
+    cut = f"trim=start={start:.2f}:end={end:.2f}"
+    size = f"{width}:{height}"
+    video = (f"{cut},setpts=PTS-STARTPTS,"
+             f"scale={size}:force_original_aspect_ratio=decrease:force_divisible_by=2:eval=frame,"
+             f"pad={size}:(ow-iw)/2:(oh-ih)/2:eval=frame,setsar=1,fps={config.OUT_FPS}")
+    # Decode continuously through resolution switches. Seeking into the transport stream can skip frames
+    # near a switch. The portrait filter graph then receives one stable size and a zero-based timeline.
+    run(["ffmpeg", "-y", "-v", "error", "-t", f"{end:.2f}", "-reinit_filter:v", "0", "-i", str(src),
+         "-map", "0:v:0", "-map", "0:a:0", "-filter_threads", "2", "-vf", video,
+         "-af", f"a{cut},asetpts=PTS-STARTPTS", "-t", f"{end-start:.2f}",
+         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "15", "-c:a", "pcm_s16le", str(dest)],
+        cwd=work, timeout=RENDER_SECONDS)
+    return dest
+
+
+def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str,
+               face=None, graph=None, level_audio=False) -> dict:
+    global _qsv_ok, _nvenc_retry_at
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
-    fc = _filter(layout, fg_h, face) + f"[v0]ass={name}.ass:fontsdir=f[v]"
+    fc = (graph or _filter(layout, fg_h, face)) + f"[v0]ass={name}.ass:fontsdir=f[v]"
+    audio_filter = "loudnorm=I=-14:TP=-1.5:LRA=11"
+    if level_audio:
+        audio_filter = "highpass=f=65,acompressor=threshold=0.12:ratio=2:attack=15:release=180," + audio_filter
     base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
-            "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+            "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", audio_filter,
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]
     encoders = []
+    if config.NVENC and time.monotonic() >= _nvenc_retry_at:
+        encoders.append(("nvenc", ["yuv420p", "-c:v", "h264_nvenc", "-preset", "p5",
+                                   "-rc", "vbr", "-cq", "28", "-b:v", "0"]))
     if _qsv_ok is not False:
         encoders.append(("qsv", ["nv12", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "fast"]))
     encoders.append(("x264", ["yuv420p", "-c:v", "libx264", "-crf", "21", "-preset", "veryfast"]))
@@ -309,7 +369,10 @@ def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layo
                 _qsv_ok = True
             break
         err = p.stderr[-1200:]
-        if label == "qsv":
+        if label == "nvenc":
+            # Give the GPU time to free an encoder session before the next attempt.
+            _nvenc_retry_at = time.monotonic() + 60
+        elif label == "qsv":
             _qsv_ok = False
     else:
         raise RuntimeError(f"Render failed: {err}")

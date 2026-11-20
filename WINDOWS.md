@@ -1,0 +1,18 @@
+# Running PeakCut on Windows
+
+Install Python 3.11 and put FFmpeg and FFprobe on your PATH. From the checkout in PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m studio.fetch_model
+.\.venv\Scripts\python.exe -m studio.server
+```
+
+Open [the local dashboard](http://127.0.0.1:8765/app). Create a local `.env` from `.env.example` for settings. Keep `.env`, credentials, and account data on the computer.
+
+`Start-PeakCut.ps1 -DashboardOnly` also starts the local dashboard and any provisioned speech workers. The full launcher and `Connect-ChatGPT.cmd` expect a separately provisioned, dedicated local OpenClaw profile, its runtime under `tools`, and its gateway credential in `secrets/gateway-token.txt`. The installed runtimes, model weights, and sign-in state are local setup items. The optional CUDA worker and Mac speech-worker router can both be configured on the local machine.
+
+```powershell
+.\.venv\Scripts\python.exe tests/run.py
+```

@@ -135,6 +135,15 @@ DATABASE_URL = env("DATABASE_URL") or f"sqlite:///{(DATA_DIR / 'peakcut.db').as_
 SKIP_STATIC = env("PEAKCUT_SKIP_STATIC", "0") == "1"
 STATIC_THRESHOLD = float(env("PEAKCUT_STATIC_THRESHOLD", "0.4"))
 STATIC_MIN_SECONDS = float(env("PEAKCUT_STATIC_MIN_SECONDS", "6"))
+MIN_CLIP_SECONDS = 15
+CLIP_TOO_SHORT = f"A clip must be at least {MIN_CLIP_SECONDS} seconds long."
+
+
+def long_enough(start, end, minimum=MIN_CLIP_SECONDS):
+    # Timestamps are stored to hundredths. Disregard float subtraction error.
+    return round(end - start, 6) >= minimum
+
+
 # How long one AI answer may take on a live stream. It is short on purpose: while the AI thinks, the
 # recording carries on, so a slow answer costs a check, not the stream.
 LIVE_AI_TIMEOUT = float(env("PEAKCUT_LIVE_AI_TIMEOUT", "45"))
@@ -246,3 +255,4 @@ def _read_google_client() -> tuple:
 # ---------------------------------------------------------------- video
 MAX_SOURCE_HEIGHT = 1080
 OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
+NVENC = env("PEAKCUT_NVENC", "0") == "1"

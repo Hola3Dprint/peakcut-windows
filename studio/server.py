@@ -972,6 +972,18 @@ def delete_clip(jid: str, cid: str):
     return {"ok": True}
 
 
+@app.put("/api/jobs/{jid}/clips/{cid}/posting")
+def set_clip_posting(jid: str, cid: str, body: dict = Body(...)):
+    job = _job_or_404(jid)
+    clip = next((c for c in job["clips"] if c["id"] == cid), None)
+    if clip is None:
+        raise HTTPException(404, "No such clip")
+    blocked = body.get("blocked")
+    if not isinstance(blocked, bool):
+        raise HTTPException(400, "Choose whether to block this clip from posting.")
+    return posting.set_clip_blocked(job, clip, blocked)
+
+
 @app.post("/api/bulk/delete")
 def bulk_delete(body: dict = Body(...)):
     _throttle("bulkdel:" + ctx.uid(), 30, 600)
@@ -1378,7 +1390,7 @@ def public_clip(token: str):
     uid, job_id, name = got
     with ctx.as_user(uid):
         job = jobs.get(job_id) if re.fullmatch(r"[\w\-]{8,60}", job_id) else None
-        f = Path(job["dir"]) / "clips" / name if job else None
+        f = Path(job["dir"]) / "outgoing" / name if job and re.fullmatch(r"reviewed-[0-9a-f]{32}\.mp4", name) else None
     if not f or not f.is_file():
         raise HTTPException(404)
     return FileResponse(f, media_type="video/mp4", headers={"Cache-Control": "private, no-store"})
@@ -1455,7 +1467,10 @@ def add_posts(body: dict = Body(...)):
     clip = next((c for c in job["clips"] if c["id"] == body.get("clip")), None) if job else None
     if not clip or clip.get("status") != "done":
         raise HTTPException(404, "That clip is not ready")
-    made = posting.enqueue(job, clip, [str(a) for a in body.get("accounts", [])][:20], now=bool(body.get("now")))
+    try:
+        made = posting.enqueue(job, clip, [str(a) for a in body.get("accounts", [])][:20], now=bool(body.get("now")))
+    except posting.publish_review.Hold as error:
+        raise HTTPException(409, str(error))
     if not made:
         raise HTTPException(400, "Nothing was queued. Pick at least one account this clip has not already gone to.")
     return {"queued": len(made)}

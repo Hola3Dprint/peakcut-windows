@@ -1,0 +1,48 @@
+{
+  "sources": [
+    "https://www.twitch.tv/jynxzi", "https://www.twitch.tv/kaicenat", "https://www.twitch.tv/caseoh_",
+    "https://www.twitch.tv/hasanabi", "https://www.twitch.tv/dantes", "https://www.twitch.tv/stableronaldo",
+    "https://www.rockstargames.com/VI/only-in-leonida",
+    "https://www.ubisoft.com/en-us/game/rainbow-six/siege/game-info/operators",
+    "https://www.leagueoflegends.com/en-us/how-to-play/",
+    "https://playvalorant.com/en-us/news/announcements/beginners-guide/",
+    "https://www.fortnite.com/fortnite-zero-build"
+  ],
+  "all": {
+    "Jynxzi": [], "Kai Cenat": ["kaicenat"], "CaseOh": ["caseoh_"], "HasanAbi": ["hasan abi"],
+    "Stable Ronaldo": ["stableronaldo"], "DarkViperAU": ["dark viper au"], "Treyten": [],
+    "NPC": ["n p c"], "NPCs": ["n p cs"], "PvP": ["p v p"], "PvE": ["p v e"],
+    "AFK": ["a f k"], "GGs": ["g g s"], "GG": ["g g"], "DPS": ["d p s"], "XP": ["x p"],
+    "1v1": ["one v one","one vee one"], "1v2": ["one v two"], "1v3": ["one v three"],
+    "1v4": ["one v four"], "1v5": ["one v five"], "respawn": ["re spawn"],
+    "hitbox": ["hit box"], "hitboxes": ["hit boxes"], "comms": [], "keybind": ["key bind"],
+    "keybinds": ["key binds"], "loadout": [], "wallbang": ["wall bang"],
+    "GTA VI": ["gta six","gta 6","g t a six"], "GTA V": ["gta five","gta 5","g t a five"],
+    "Rainbow Six Siege": ["rainbow 6 siege"], "VALORANT": [], "Fortnite": [], "Minecraft": []
+  },
+  "contexts": [
+    {"when":["jynxzi"],"terms":{"Jynxzi":["jinxy","jinxie","jinxi","jynxie"]}},
+    {"when":["caseoh","caseoh_"],"terms":{"CaseOh":["case oh","case o"]}},
+    {"when":["kaicenat","kai cenat"],"terms":{"Kai Cenat":["kai senat","kai sinat"]}},
+    {"when":["hasanabi"],"terms":{"HasanAbi":["hasan abby","hassan abi"],"Hasan Piker":["hassan piker"]}},
+    {"when":["stableronaldo","stable ronaldo"],"terms":{"Stable Ronaldo":["stable ronaldo"]}},
+    {"when":["dantes"],"terms":{"Dantes":["dantes"],"Doaenel":["doaenel"]}},
+    {"when":["treyten"],"terms":{"Treyten":["trey ten","tray ten"]}},
+    {"when":["gta","grand theft auto"],"terms":{"Vice City":["vice city"],"Leonida":["lee onida","leonida"],
+      "Los Santos":["los santos","loss santos"],"Blaine County":[],"Sandy Shores":[],"Cayo Perico":["cayo perico"],
+      "FiveM":["five m","five em"],"NoPixel":["no pixel"],"LSPD":["l s p d"],"RP":["r p"],
+      "RDM":["r d m"],"VDM":["v d m"],"OOC":["o o c"],"wanted level":[],"freemode":["free mode"]}},
+    {"when":["rainbow six","rainbow 6","r6","siege"],"terms":{"R6":["r six"],"Jäger":["jager","jaeger"],
+      "Thermite":[],"Hibana":[],"Dokkaebi":[],"Kapkan":[],"Valkyrie":[],"defuser":["diffuser"],
+      "hard breach":[],"spawn peek":["spawn peak"],"ADS":["a d s"]}},
+    {"when":["league of legends","summoner's rift"],"terms":{"Baron Nashor":["baron nasher","baron nashor"],
+      "Summoner's Rift":["summoners rift"],"Nexus":[],"Hecarim":[],"ARAM":["a ram"],"jungler":[],
+      "gank":[],"pentakill":["penta kill"],"Jinx":[],"bot lane":[],"mid lane":[]}},
+    {"when":["fortnite"],"terms":{"Zero Build":[],"Reboot Van":[],"Battle Bus":[],"Victory Royale":["victory royal"],
+      "Slurp Juice":[],"Storm Surge":[]}},
+    {"when":["valorant"],"terms":{"Spike":[],"Jett":[],"Omen":[],"Sova":[],"Reyna":[],"Vandal":[],
+      "eco round":["echo round"],"ult orb":["ult orb"]}},
+    {"when":["minecraft"],"terms":{"Netherite":["nether ite"],"Enderman":["ender man"],"Ender Pearl":[],
+      "Redstone":["red stone"],"Elytra":[]}}
+  ]
+}

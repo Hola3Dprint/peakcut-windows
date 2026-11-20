@@ -39,14 +39,14 @@ are where the live chat suddenly got much busier, which usually means viewers re
 Video title: {title}
 Channel: {uploader}
 
-Pick up to {n} moments that would work as standalone clips for someone who has never seen the stream:
+Pick every distinct moment that would work as a standalone clip for someone who has never seen the stream:
 funny moments, fails, clutch plays, rage, shock, hot takes, or a short story with a payoff.
 """
 
 LIVE_NOTE = """
 This is a LIVE stream and the transcript is only the last few minutes, ending at {now:.0f} seconds.
 If a moment is still unfolding at the very end, leave it out; you will see it again in the next check.
-Most checks should return []. Only return a moment you would stop scrolling for.
+Return [] if nothing has a clear payoff.
 """
 
 RULES = """
@@ -55,10 +55,16 @@ Rules:
 - Start on the setup line, not mid-sentence. End right after the payoff or reaction, on the last word of a
   complete sentence: never in the middle of a sentence or a thought. The clip must make sense on its own.
 - Do not pick intros, sponsor reads, "like and subscribe", or dead air.
-- Skip weak moments. Fewer strong clips beat many weak ones. Return [] if nothing is worth clipping.
+- Keep each distinct payoff even when several happen close together. Combine the setup, payoff and reaction
+  for the same event in one clip. Skip weak moments and return [] if nothing is worth clipping.
 - score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80.
 - hook: at most 5 words, ALL CAPS, shown as big text on the video. Curiosity, but true to what happens.
-- title: at most 70 characters, for the post.
+- title: write the opening hook a stranger would tap. Lead with the specific stakes, an unexpected detail,
+  or an exact short quote from this moment. Leave the payoff for the video. Use natural spoken language.
+  For an accidental open mic, "Who else heard that celebration?" can work. Avoid recap headlines,
+  generic hype, invented quotes and claims the footage cannot support. Keep it under 70 characters.
+- Skip clips containing slurs, racism, dehumanization or identity-based abuse, including quotations.
+  Use clean language in every public field. Never repeat hateful speech in a title, hook or tag.
 - description: one or two sentences.
 - hashtags: 5 tags without the # sign.
 - highlight_words: 3 to 6 single words spoken in the clip that carry the punch.
@@ -77,6 +83,14 @@ Never put links, @handles, phone numbers, or "visit / buy / subscribe" calls in 
 </transcript>
 """
 
+VOICE_RULE = (
+    "The soundtrack can include the creator, game characters, trailers, or other people. "
+    "CREATOR marks a verified voice match. OTHER is a different voice; UNKNOWN or unlabeled speech has no verified speaker. "
+    "Never credit the creator with other or unknown dialogue. For gaming clips, prefer the creator's own reaction or commentary "
+    "as the payoff. Game dialogue alone is context. An exceptional visual play or unambiguous visible reaction can stand on its own. "
+    "A loud soundtrack or chat spike alone does not prove the creator reacted."
+)
+
 
 CATEGORIES = {"funny", "fail", "clutch", "rage", "shock", "take", "story", "other"}
 _CTRL = re.compile(r"[\x00-\x1f\x7f]+")
@@ -87,7 +101,8 @@ This stream is {game}. Pick the moments that only mean something with that game 
 - The hook is what was said at that moment, or, if nothing was said, the name of what happened in
   two or three words ("1 VS 3", "THE SHOT", "HE GOT ME", "CLUTCH"). Never a sentence that needs
   the game explained.
-- The title names the game when the clip is about it.
+- Name the game in the title when it makes the stakes clearer. An operator, place, or in-game item
+  can be more specific. Keep the surprise for the video.
 - The hashtags include {tags}.
 """
 
@@ -114,7 +129,8 @@ def _num(v, default=0.0):
 
 
 def _fmt(lines):
-    return "\n".join(f"[{l['s']:.1f}] {'(LOUD) ' if l['loud'] else ''}{'(CHAT) ' if l.get('chat') else ''}{_safe(l['text'], 2000)}"
+    return "\n".join(f"[{l['s']:.1f}] {l['speaker'].upper() + ': ' if l.get('speaker') else ''}"
+                     f"{'(LOUD) ' if l['loud'] else ''}{'(CHAT) ' if l.get('chat') else ''}{_safe(l['text'], 2000)}"
                      for l in lines)
 
 
@@ -147,7 +163,8 @@ def _same_word(old, new):
 
 
 def _overlaps(s, e, others):
-    return any(min(e, k["end"]) - max(s, k["start"]) > 0.3 * (e - s) for k in others)
+    return any(min(e, k["end"]) - max(s, k["start"]) > 0.3 * min(e - s, k["end"] - k["start"])
+               for k in others)
 
 
 def make_lines(words, loud=None, chat=None):
@@ -162,11 +179,11 @@ def make_lines(words, loud=None, chat=None):
                 seg = loud[int(s): int(e) + 1]
                 is_loud = bool(len(seg) and seg.max() > 1.5)
             lines.append({"s": s, "e": e, "text": " ".join(w["w"] for w in cur), "loud": is_loud,
-                          "chat": bool(chat and chat(s, e))})
+                          "chat": bool(chat and chat(s, e)), "speaker": cur[0].get("speaker")})
             cur.clear()
 
     for w in words:
-        if cur and (w["s"] - cur[-1]["e"] > 0.7 or w["s"] - cur[0]["s"] > 10
+        if cur and (w.get("speaker") != cur[-1].get("speaker") or w["s"] - cur[-1]["e"] > 0.7 or w["s"] - cur[0]["s"] > 10
                     or (cur[-1]["w"][-1:] in ".?!" and len(cur) >= 4)):
             flush()
         cur.append(w)
@@ -247,6 +264,10 @@ def fallback_by_loudness(db, words, n, max_len, duration):
     z = loud_zscore(db)
     picks, order = [], np.argsort(-z)
     for sec in order:
+        if not n and z[sec] <= 1.5:
+            break  # without a requested count, only distinct sound peaks qualify for the fallback
+        if not n and db[sec] <= -55:
+            continue
         s = max(0.0, float(sec) - max_len * 0.6)
         e = min(duration, s + max_len)
         if any(not (e <= p["start"] or s >= p["end"]) for p in picks):
@@ -256,7 +277,7 @@ def fallback_by_loudness(db, words, n, max_len, duration):
         picks.append({"start": s, "end": e, "score": 50, "category": "other", "hook": "WAIT FOR IT",
                       "title": "Loud moment", "description": "", "hashtags": [], "highlight_words": [],
                       "reason": "Picked by loudness because the AI was unavailable."})
-        if len(picks) >= n:
+        if n and len(picks) >= n:
             break
     return picks
 
@@ -267,27 +288,51 @@ def _game_rules(game):
         return ""
     tags = ", ".join(games.tags_of(game)) or "the game's own tags"
     # The creator types the game in themselves, so it is treated like any other text from outside.
-    return GAME_RULES.format(game=_safe(games.name_of(game) or str(game), 40), tags=tags)
+    name = games.name_of(game)
+    rules = GAME_RULES.format(game=_safe(name or str(game), 40), tags=tags)
+    if name == "Grand Theft Auto VI":
+        rules += (
+            "- Prioritize funny NPC encounters, unexpected crashes, chaotic chases, clutch escapes, "
+            "and genuine streamer reactions.\n"
+            "- Keep enough lead-in to understand what started the moment, then show the payoff "
+            "and include the immediate streamer reaction when there is one.\n"
+            "- Use only events supported by the transcript and live signals. Avoid inventing gameplay.\n"
+        )
+    return rules
 
 
-def find_clips(words, db, duration, title="", uploader="", max_clips=6, min_len=15, max_len=60, log=print, game=None):
+def find_clips(words, db, duration, title="", uploader="", max_clips=0, min_len=15, max_len=60, log=print, game=None, chat=None):
     z = loud_zscore(db)
-    lines = make_lines(words, z)
+    lines = make_lines(words, z, chat)
+    # Chat or a sudden sound can be the only clue in a stretch without commentary.
+    for second in range(0, len(db), 8):
+        end = min(duration, second + 8)
+        loud = bool(np.any((z[second:second + 8] > 1.5) & (db[second:second + 8] > -55)))
+        crowd = bool(chat and chat(second, end))
+        if (loud or crowd) and not any(line["s"] < end and line["e"] >= second for line in lines):
+            lines.append({"s": second, "e": end, "text": "(no speech)", "loud": loud, "chat": crowd})
+    lines.sort(key=lambda line: line["s"])
     if not lines:
-        return [], {"model": None, "note": "No speech found."}
+        return [], {"model": None, "note": "", "quiet": True}
     found, used_model, tokens = [], None, 0
+    failed = []
     t = 0.0
     windows = []
     while t < duration:
         windows.append((t, min(duration, t + WINDOW_SEC)))
-        t += WINDOW_SEC - OVERLAP_SEC
-    per_window = max(2, min(8, int(np.ceil(max_clips * 1.5 / len(windows))) + 1))
-    extra = _game_rules(game)
+        if windows[-1][1] >= duration:
+            break
+        t += WINDOW_SEC - max(OVERLAP_SEC, min(max_len, WINDOW_SEC // 2))
+    extra = _game_rules(game) + "\n" + VOICE_RULE + "\n"
+    if chat:
+        extra += ("\n(CHAT) marks a burst from several different viewers. Look just before it for what "
+                  "prompted the reaction. Keep the setup and payoff. Ordinary chat, a raid, or a greeting "
+                  "alone is insufficient evidence of a highlight.\n")
     for a, b in windows:
         chunk = [l for l in lines if a <= l["s"] < b]
-        if len(chunk) < 3:
+        if not chunk:
             continue
-        prompt = (HEAD.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", n=per_window)
+        prompt = (HEAD.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown")
                   + extra
                   + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(chunk)))
         try:
@@ -296,6 +341,7 @@ def find_clips(words, db, duration, title="", uploader="", max_clips=6, min_len=
             found += [c for c in out if isinstance(c, dict) and a - 5 <= float(c.get("start", -1)) < b]
         except Exception as e:  # noqa: BLE001
             log(f"AI window {a:.0f}-{b:.0f}s failed: {e}")
+            failed.append([a, b])
     note = ""
     if not used_model:
         found = fallback_by_loudness(db, words, max_clips, max_len, duration)
@@ -303,15 +349,15 @@ def find_clips(words, db, duration, title="", uploader="", max_clips=6, min_len=
     clips = []
     for c in sorted(found, key=lambda c: -_num(c.get("score"))):
         s, e = _snap(c, lines, words, min_len, max_len, duration)
-        if e - s < min(min_len, duration) - 1:
+        if not config.long_enough(s, e, min_len):
             continue
         if _overlaps(s, e, clips):
             continue  # overlaps a better clip
         clips.append(_tidy(c, s, e, game))
-        if len(clips) >= max_clips:
+        if max_clips and len(clips) >= max_clips:
             break
     clips.sort(key=lambda c: c["start"])
-    return clips, {"model": used_model, "tokens": tokens, "note": note}
+    return clips, {"model": used_model, "tokens": tokens, "note": note, "failed": failed}
 
 
 def find_live_clips(words, z, now, chat=None, title="", uploader="", min_len=15, max_len=60, existing=(), game=None):
@@ -319,7 +365,7 @@ def find_live_clips(words, z, now, chat=None, title="", uploader="", min_len=15,
     lines = make_lines(words, z, chat)
     if len(lines) < 3:
         return [], 0
-    prompt = (HEAD.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", n=2)
+    prompt = (HEAD.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown")
               + _game_rules(game)
               + LIVE_NOTE.format(now=now)
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
@@ -327,7 +373,7 @@ def find_live_clips(words, z, now, chat=None, title="", uploader="", min_len=15,
     clips = []
     for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_num(c.get("score"))):
         s, e = _snap(c, lines, words, min_len, max_len, now)
-        if e - s < min_len - 1 or _overlaps(s, e, list(existing) + clips):
+        if not config.long_enough(s, e, min_len) or _overlaps(s, e, list(existing) + clips):
             continue
         clips.append(_tidy(c, s, e, game))
     return clips, spent
@@ -370,11 +416,11 @@ Channel: {uploader}
 The transcript covers seconds {start:.0f} to {now:.0f}. If a moment is still unfolding at the very end, leave it out;
 you will see it again in the next check.
 {must}
-Pick up to {n} moments that would work as standalone clips for someone who has never seen the stream:
+Pick every distinct moment that would work as a standalone clip for someone who has never seen the stream:
 funny moments, fails, clutch plays, rage, shock, hot takes, or a short story with a payoff.
 """
-MUST_PICK = "This time you MUST return the single best moment in this stretch, even if it is only decent."
-NOT_MUST = "Most checks should return []. Only return a moment you would stop scrolling for."
+MUST_PICK = "If nothing strong happened, return the single best available moment."
+NOT_MUST = "Return [] if nothing has a clear payoff."
 
 FACE_CAM = """One frame of a gaming stream is attached.
 
@@ -396,6 +442,8 @@ def look_for_facecam(jpeg: bytes, timeout=None) -> dict:
     Returns {"looked": whether the model understood the question at all, "box": (x, y, w, h) as parts of
     the frame, or None}. A model that only reads text, or a service that refuses pictures, leaves "looked"
     False, and the caller falls back to the borders it can measure itself."""
+    if config.env("PEAKCUT_AI_CLIPS_ONLY") == "1":
+        return {"looked": False, "box": None}
     try:
         text, sent, wrote = ai.see(FACE_CAM, jpeg, timeout)
     except Exception:  # noqa: BLE001 - no picture is not a failure, the local search still runs
@@ -412,13 +460,13 @@ def look_for_facecam(jpeg: bytes, timeout=None) -> dict:
     return {"looked": False, "box": None}
 
 SIGNAL_JUDGE = """You judge a live stream ONLY from its reaction signals. You cannot hear the words or see the video.
-Each line is a 2-second slice: [seconds] L=how much louder than usual the streamer was (0 = normal,
+Each line is a 2-second slice: [seconds] L=how much louder than usual the mixed audio was (0 = normal,
 +2 or more = shouting or laughing hard, negative = quieter){chat_note}
 
 Find moments where something clearly happened: a sudden jump in loudness (shouting, screaming, laughing),
 {chat_hint}a stretch that stays well above normal. Ignore steady background noise or music that is loud the whole time.
-Return up to 3 moments with start and end (seconds), score 0-100 for how strong the reaction is, and a short reason.
-Return [] if nothing stands out. Most stretches have nothing.
+Return each distinct reaction with start and end (seconds), score 0-100 for how strong it is, and a short reason.
+Return [] if nothing stands out.
 
 Signals from second {start:.0f} to {now:.0f}:
 {lines}
@@ -431,23 +479,26 @@ SIG_SCHEMA = {
 }
 
 
-def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=2, must=False,
+def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=0, must=False,
                     game=None, timeout=None):
     """Judge 1: words only. Returns (clips, tokens)."""
     lines = make_lines(words)
-    if len(lines) < 3:
+    if not lines:
         return [], 0
     prompt = (TRANSCRIPT_JUDGE.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", start=start, now=now,
-                                      n=n, must=MUST_PICK if must else NOT_MUST)
+                                      must=MUST_PICK if must else NOT_MUST)
               + _game_rules(game)
+              + "\n" + VOICE_RULE + "\n"
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, purpose="Live: words judge", timeout=timeout)
     clips = []
     for c in sorted((c for c in out if isinstance(c, dict)), key=lambda c: -_num(c.get("score"))):
         s, e = _snap(c, lines, words, min_len, max_len, now)
-        if e - s < min_len - 1 or _overlaps(s, e, list(existing) + clips):
+        if not config.long_enough(s, e, min_len) or _overlaps(s, e, list(existing) + clips):
             continue
         clips.append(_tidy(c, s, e, game))
+        if n and len(clips) >= n:
+            break
     return clips, spent
 
 
@@ -534,6 +585,8 @@ def english_captions(words: list, lang: str, title: str = "", youtube_english=No
             en = None
         if en and len(en) >= 3:
             return fix_caption_words(en, title)
+    if config.env("PEAKCUT_AI_CLIPS_ONLY") == "1":
+        return roman.words(words)
     try:
         return roman.words(translate_caption_words(words, lang, title))
     except Exception:  # noqa: BLE001
@@ -554,7 +607,7 @@ def _fix_caption_words(words: list, title: str = "", lang: str = "") -> list:
     The answer must have exactly one entry per original word, so every word keeps its own timing. An entry may be
     "" to drop a filler word, or hold two words joined by a space. If anything looks off, the original words are kept.
     """
-    if len(words) < 3:
+    if len(words) < 3 or config.env("PEAKCUT_AI_CLIPS_ONLY") == "1":
         return words
     # The Hindi and Urdu rule is only given for those videos. On an English video it is one more thing a small
     # model can get wrong (turning English into something else).

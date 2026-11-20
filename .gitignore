@@ -30,3 +30,12 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Windows installation files, local profiles, and captured media
+backups/
+fixtures/
+openclaw-state*/
+tools/asr-cuda/
+tools/ffmpeg*/
+tools/node*/
+tools/openclaw/

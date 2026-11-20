@@ -40,7 +40,7 @@ def main(data):
     try:
         user = auth.local_user().id
         source = {"type": "file", "name": "Caption test"}
-        clip = {"id": "clip1", "start": 0.0, "end": 4.0, "status": "done", "hook": "KEEP THE HOOK",
+        clip = {"id": "clip1", "start": 0.0, "end": 16.0, "status": "done", "hook": "KEEP THE HOOK",
                 "title": "A clip", "description": "", "hashtags": [], "score": 95}
 
         with ctx.as_user(user):
@@ -56,7 +56,7 @@ def main(data):
             check("the default is to show captions", job["options"]["captions"] is True)
             job["options"].pop("captions")
             job.update(status="done", source_path=str(Path(data) / "source.mp4"), width=1920, height=1080,
-                       duration=4.0, clips=[clip])
+                       duration=16.0, clips=[clip])
             jobs.save(job)
 
         with (ctx.as_user(user), patch.object(render, "_render_in", return_value={"file": "clip1.mp4"}) as encode,
@@ -101,6 +101,22 @@ def main(data):
             ass = encode.call_args.args[-1]
             check("the renderer honors captions off even when it receives spoken words",
                   not has_dialogue(ass, "Cap") and has_dialogue(ass, "Hook", "KEEP THE HOOK"))
+
+        with (ctx.as_user(user), patch.object(jobs.voices, "audio", return_value=b"actual audio") as audio,
+              patch.object(jobs.transcribe, "transcribe", return_value=[{"w":"actual", "s":1.0, "e":1.5}]) as decode,
+              patch.object(brain, "english_captions", side_effect=lambda words, *args, **kwargs: words),
+              patch.object(render, "prepare_live_source", return_value=Path(data) / "prepared.mkv") as prepare_live,
+              patch.object(render, "render_clip", return_value={"file":"live.mp4"}) as encode):
+            fresh = dict(clip, src=str(Path(data) / "live.src.ts"), src_offset=90, src_end=128,
+                         start=100.0, end=116.0, captions=True, fixed_words=FIXED, fixed_for=[100.0,116.0,"en2"])
+            live_job.update(width=1920, height=1080)
+            jobs._render_clip(live_job, fresh, [{"w":"wrong", "s":101.0, "e":101.5}], Path(data))
+            check("live captions and review use the audio from the same prepared media as the video",
+                  prepare_live.call_args.args[2:4] == (10.0, 26.0)
+                  and audio.call_args.args == (Path(data) / "prepared.mkv", 0.0, 16.0)
+                  and decode.call_args.args == (b"actual audio",) and fresh["review_speech"] == "actual"
+                  and encode.call_args.args[0] == Path(data) / "prepared.mkv"
+                  and encode.call_args.args[4][0]["w"] == "actual" and encode.call_args.args[4][0]["s"] == 1.0)
     finally:
         db.engine.dispose()
 

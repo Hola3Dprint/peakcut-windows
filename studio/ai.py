@@ -301,7 +301,7 @@ def call(model: str, prompt: str, schema: dict, timeout: float | None = None):
     return {"gemini": _gemini, "openai": _openai, "anthropic": _anthropic}[how](model, prompt, schema, timeout)
 
 
-def see(prompt: str, image: bytes, timeout: float | None = None) -> tuple[str, int, int]:
+def see(prompt: str, image: bytes, timeout: float | None = None, *, clip_review=False) -> tuple[str, int, int]:
     """Ask one model about one picture: (the answer as text, tokens in, tokens out).
 
     Nothing is broken by a service that cannot look at pictures, or a model that is only text: the answer
@@ -310,8 +310,12 @@ def see(prompt: str, image: bytes, timeout: float | None = None) -> tuple[str, i
     if not ready() or not image or not models():
         return "", 0, 0
     model = models()[0]
+    address = base_url()
+    if clip_review and (provider() != "custom" or address != "http://127.0.0.1:18794/v1"
+                        or model != "openclaw:peakcut"):
+        raise AIError("The dedicated ChatGPT clip reviewer is unavailable.")
     b64 = base64.b64encode(image).decode()
-    how = PROVIDERS[provider()][2]
+    how = "openai" if clip_review else PROVIDERS[provider()][2]
     if how == "gemini":
         body = {"contents": [{"role": "user", "parts": [
             {"text": prompt},
@@ -341,7 +345,7 @@ def see(prompt: str, image: bytes, timeout: float | None = None) -> tuple[str, i
     body = {"model": model, "stream": False, "messages": [{"role": "user", "content": [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}]}
-    r = httpx.post(f"{base_url()}/chat/completions", json=body, headers=headers, timeout=timeout or 120)
+    r = httpx.post(f"{address}/chat/completions", json=body, headers=headers, timeout=timeout or 120)
     if r.status_code != 200:
         _fail(r, model)
     data = _openai_body(r)

@@ -338,6 +338,31 @@ def _yt_token(acc) -> str:
     return acc["access_token"]
 
 
+def youtube_uploads_today(acc):
+    """Owner-visible uploads, including videos uploaded outside PeakCut, on the local calendar."""
+    from datetime import datetime
+    headers = {"Authorization": "Bearer " + _yt_token(acc)}
+    base = "https://www.googleapis.com/youtube/v3/"
+    ch = _check(httpx.get(base + "channels", params={"part":"contentDetails", "mine":"true"},
+                          headers=headers, timeout=25), "Reading the channel").json()["items"]
+    playlist = next(c["contentDetails"]["relatedPlaylists"]["uploads"] for c in ch if "yt_" + c["id"] == acc["id"])
+    today = datetime.now().date()
+    params = {"part":"snippet", "playlistId":playlist, "maxResults":50}
+    uploads = []
+    while True:
+        page = _check(httpx.get(base + "playlistItems", params=params, headers=headers, timeout=25),
+                      "Checking today's uploads").json()
+        for row in page["items"]:
+            item = row["snippet"]
+            when = datetime.fromisoformat(item["publishedAt"].replace("Z", "+00:00")).astimezone()
+            if when.date() < today:
+                return uploads
+            uploads.append(dict(remote_id=item["resourceId"]["videoId"], posted_at=when.timestamp(), title=item["title"]))
+        if not page.get("nextPageToken"):
+            return uploads
+        params["pageToken"] = page["nextPageToken"]
+
+
 def youtube_upload(acc, path: Path, title: str, description: str, tags: list, privacy: str):
     token = _yt_token(acc)
     meta = {"snippet": {"title": re.sub(r"[<>]", "", title)[:100] or "Clip", "description": re.sub(r"[<>]", "", description)[:4900],

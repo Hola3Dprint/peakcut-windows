@@ -14,9 +14,9 @@ def _root() -> Path:
 
 _lock = threading.RLock()
 
-DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "min_len": 15, "max_len": 60,
-            "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 4, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
-            "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
+DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "min_len": config.MIN_CLIP_SECONDS, "max_len": 60,
+            "max_clips": 0, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 0, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
+            "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 0,
             "game": "",
             "trigger_words": "clip that, clip it",
             "autopost": False, "accounts": [], "post_min_score": 75, "post_gap_min": 45, "daily_cap": 6,
@@ -40,8 +40,10 @@ def _fix(c: dict) -> dict:
         c["ai_every_min"] = 3       # "Auto" (0) is gone: jumps in loudness and chat are now always checked
     if c.get("channel") not in ch.values():
         c["channel"] = next((ch[k] for k in PLATFORMS if k in ch), "")
+    for key in ("min_len", "max_len"):
+        c[key] = max(config.MIN_CLIP_SECONDS, c[key])
     return c
-NUMERIC = {"min_len": (5, 120), "max_len": (10, 180), "max_clips": (1, 20), "min_score": (0, 100), "buffer_min": (5, 120), "live_per_hour": (1, 60), "ai_every_min": (1, 30), "auto_jump_pct": (20, 300), "must_clip_min": (0, 240), "min_gap_min": (0, 60),
+NUMERIC = {"min_len": (config.MIN_CLIP_SECONDS, 120), "max_len": (config.MIN_CLIP_SECONDS, 180), "max_clips": (0, 20), "min_score": (0, 100), "buffer_min": (5, 120), "live_per_hour": (0, 60), "ai_every_min": (1, 30), "auto_jump_pct": (20, 300), "must_clip_min": (0, 240), "min_gap_min": (0, 60),
            "post_min_score": (0, 100), "post_gap_min": (5, 1440), "daily_cap": (1, 50)}
 
 
@@ -135,7 +137,7 @@ def _write(c):
 
 
 def create(data: dict) -> dict:
-    c = _fix({**DEFAULTS, **_clean(data)})
+    c = _fix({**DEFAULTS, "layout": "stream", **_clean(data)})
     if not c["name"]:
         raise ValueError("Give the creator a name.")
     slug = re.sub(r"[^a-z0-9]+", "-", c["name"].lower()).strip("-")[:40] or "creator"
@@ -159,8 +161,8 @@ def update(cid, data: dict) -> dict:
         new["channels"] = {**c["channels"], platform_key(new["channel"]): new["channel"]}
     c.update(new)
     _fix(c)
-    if c["min_len"] >= c["max_len"]:
-        raise ValueError("Shortest clip must be shorter than longest clip.")
+    if c["min_len"] > c["max_len"]:
+        raise ValueError("Longest clip must be at least as long as the shortest clip.")
     _write(c)
     return c
 

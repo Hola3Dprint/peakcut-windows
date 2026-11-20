@@ -121,7 +121,9 @@ def info(url: str) -> dict:
         i = ydl.extract_info(url, download=False)
     return {"title": i.get("title") or "", "uploader": i.get("uploader") or i.get("channel") or "",
             "duration": float(i.get("duration") or 0), "is_live": bool(i.get("is_live")),
-            "thumbnail": i.get("thumbnail") or "", "kind": i.get("_type") or "video"}
+            "thumbnail": i.get("thumbnail") or "", "kind": i.get("_type") or "video",
+            "has_chat_replay": any(t.get("protocol") == "youtube_live_chat_replay"
+                                   for t in (i.get("subtitles") or {}).get("live_chat", []))}
 
 
 def youtube_words(url: str):
@@ -304,14 +306,17 @@ def probe(path: Path) -> dict:
     rot = str((v.get("side_data_list") or [{}])[0].get("rotation", "0"))
     if rot.lstrip("-") in ("90", "270"):
         w, h = h, w
-    return {"width": w, "height": h, "duration": float(data["format"]["duration"])}
+    duration = float(data["format"]["duration"])
+    video_duration = v.get("duration")
+    return {"width": w, "height": h, "duration": duration,
+            "video_duration": float(video_duration) if video_duration not in (None, "N/A") else duration}
 
 
 def extract_audio(src: Path, wav: Path):
     # first_pts=0 pads any gap before the audio starts, so second 0 of the wav is second 0 of the file
     # -t: never more audio than the longest video allowed, whatever the file claims about itself
     run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", "-t", str(int(config.MAX_VIDEO_HOURS * 3600) + 60),
-         "-af", "aresample=async=1:first_pts=0", "-c:a", "pcm_s16le", str(wav)])
+         "-af", "aresample=async=1:first_pts=0", "-c:a", "pcm_s16le", "-rf64", "auto", str(wav)])
 
 
 def load_audio(wav: Path) -> np.ndarray:
@@ -322,9 +327,13 @@ def load_audio(wav: Path) -> np.ndarray:
 
 def loudness_per_second(audio: np.ndarray) -> np.ndarray:
     """RMS level in dB for each second of audio."""
-    n = len(audio) // 16000
-    if n == 0:
-        return np.zeros(1, dtype=np.float32)
-    x = audio[: n * 16000].reshape(n, 16000).astype(np.float32) / 32768.0
-    rms = np.sqrt((x ** 2).mean(axis=1) + 1e-10)
-    return (20 * np.log10(rms)).astype(np.float32)
+    n, tail = divmod(len(audio), 16000)
+    levels = np.empty(n + bool(tail), dtype=np.float32)
+    for start in range(0, n, 60):
+        end = min(n, start + 60)
+        x = audio[start * 16000:end * 16000].reshape(-1, 16000).astype(np.float32) / 32768.0
+        levels[start:end] = 10 * np.log10((x * x).mean(axis=1) + 1e-10)
+    if tail:
+        x = audio[-tail:].astype(np.float32) / 32768.0
+        levels[-1] = 10 * np.log10((x * x).mean() + 1e-10)
+    return levels

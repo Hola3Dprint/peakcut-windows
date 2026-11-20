@@ -26,7 +26,7 @@ def main() -> int:
            # nothing outside this machine is contacted: no AI, no email, no Google sign-in
            "PEAKCUT_SMTP_HOST": "", "PEAKCUT_VERIFY_EMAIL": "1",   # the tests cover the confirm-your-email rule
            "GOOGLE_CLIENT_ID": "", "GOOGLE_CLIENT_SECRET": "", "GOOGLE_CLIENT_FILE": "", "PYTHONUNBUFFERED": "1",
-           "PEAKCUT_AI_KEY": "", "PEAKCUT_AI_KEY_FILE": "", "PEAKCUT_AI_MODELS": "",
+           "PEAKCUT_AI_KEY": "", "PEAKCUT_AI_KEY_FILE": "", "PEAKCUT_AI_MODELS": "", "PEAKCUT_EDITORIAL_REVIEW": "0",
            "PEAKCUT_UPLOAD_PART_MB": "5", "PEAKCUT_MAX_UPLOAD_MB": "64"}
     log = data / "server.log"
     failed = []
@@ -51,9 +51,13 @@ def main() -> int:
                 ("deleting and bulk actions", ["tests/test_delete.py"]),
                 ("big uploads in pieces", ["tests/test_upload_parts.py", BASE]),
                 ("AI services", ["tests/test_ai.py"]),
+                ("full stream and VOD review", ["tests/test_full_scan.py"]),
+                ("cross-creator YouTube selection and visual scouting", ["tests/test_channel_queue.py"]),
                 ("no sign-in, and the AI key from the dashboard", ["tests/test_local.py"]),
                 ("Hindi and Urdu captions in Roman letters", ["tests/test_roman.py"]),
                 ("turning captions off and back on", ["tests/test_captions.py"]),
+                ("live clips that change resolution", ["-m", "tests.test_live_render"]),
+                ("caption dictionary, censorship and publication checks", ["tests/test_language_review.py"]),
                 ("connecting YouTube, Instagram and TikTok", ["tests/test_connect.py"]),
                 ("the new-version notice", ["tests/test_updates.py"]),
                 ("no limits by default", ["tests/test_limits.py"]),
